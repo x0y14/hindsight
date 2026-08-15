@@ -1,0 +1,291 @@
+# Overlay-only release for x0y14/hindsight.
+# Publishes the slim API image to GHCR. No PyPI, npm, Helm, CLI, or other images.
+name: Release JA Overlay
+
+on:
+  push:
+    tags:
+      # SemVer + -ja only (not bare vX.Y.Z).
+      - 'v*.*.*-ja'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing overlay tag to rebuild (e.g. v0.9.1-ja)'
+        required: true
+        type: string
+      update_latest:
+        description: 'Also push latest-slim (only for the current intended head line)'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-ja-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Guard
+    runs-on: ubuntu-latest
+    if: github.repository == 'x0y14/hindsight'
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      update_latest: ${{ steps.version.outputs.UPDATE_LATEST }}
+      checkout_ref: ${{ steps.version.outputs.CHECKOUT_REF }}
+    steps:
+      - name: Resolve version and ref
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+            TAG="${TAG#refs/tags/}"
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-ja$ ]]; then
+              echo "Invalid tag for dispatch: $TAG (expected vX.Y.Z-ja)"
+              exit 1
+            fi
+            VERSION="${TAG#v}"
+            UPDATE_LATEST="${{ inputs.update_latest }}"
+            CHECKOUT_REF="refs/tags/$TAG"
+          else
+            if [[ "${{ github.ref }}" != refs/tags/* ]]; then
+              echo "Tag push required; got ${{ github.ref }}"
+              exit 1
+            fi
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-ja$ ]]; then
+              echo "Invalid overlay version: $VERSION (expected X.Y.Z-ja)"
+              exit 1
+            fi
+            UPDATE_LATEST=true
+            CHECKOUT_REF="${{ github.sha }}"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "UPDATE_LATEST=$UPDATE_LATEST" >> "$GITHUB_OUTPUT"
+          echo "CHECKOUT_REF=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+          echo "Resolved VERSION=$VERSION UPDATE_LATEST=$UPDATE_LATEST CHECKOUT_REF=$CHECKOUT_REF"
+
+      - name: Refuse unexpected owner
+        run: |
+          set -euo pipefail
+          if [ "${{ github.repository_owner }}" != "x0y14" ]; then
+            echo "Refusing publish: owner is ${{ github.repository_owner }}, expected x0y14"
+            exit 1
+          fi
+
+  test:
+    name: Test (deterministic)
+    needs: [guard]
+    runs-on: ubuntu-latest
+    if: github.repository == 'x0y14/hindsight'
+    defaults:
+      run:
+        working-directory: hindsight-api-slim
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.guard.outputs.checkout_ref }}
+
+      - name: Assert dangerous upstream workflows are absent
+        working-directory: .
+        run: |
+          set -euo pipefail
+          for f in release.yml release-integration.yml release-tool.yml sign-images.yml test.yml; do
+            if [ -f ".github/workflows/$f" ]; then
+              echo "Refusing release: .github/workflows/$f still present"
+              exit 1
+            fi
+          done
+          test -f .github/workflows/release-ja.yml
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra embedded-db --index-strategy unsafe-best-match
+
+      - name: Run Japanese temporal / query analyzer tests
+        # No LLM provider secrets. Exclude judge / matrix / slow marks.
+        run: |
+          uv run pytest tests/test_query_analyzer.py tests/test_temporal_extraction.py \
+            -v -m "not hs_llm_mat and not hs_llm_core and not slow"
+
+  build-and-push:
+    name: Build and push slim API
+    needs: [guard, test]
+    runs-on: ubuntu-latest
+    if: github.repository == 'x0y14/hindsight' && needs.test.result == 'success'
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      UPDATE_LATEST: ${{ needs.guard.outputs.update_latest }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.guard.outputs.checkout_ref }}
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build slim image (load for probe)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/standalone/Dockerfile
+          target: api-only
+          build-args: |
+            INCLUDE_LOCAL_MODELS=false
+            PRELOAD_ML_MODELS=false
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: hindsight-api:ja-probe
+          labels: |
+            org.opencontainers.image.version=${{ needs.guard.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: In-image Japanese temporal probe
+        run: |
+          set -euo pipefail
+          PROBE=$(mktemp)
+          cat > "$PROBE" <<'PY'
+          from datetime import datetime
+          from hindsight_api.engine.japanese_temporal_periods import extract_japanese_period
+          from hindsight_api.engine.temporal_periods import extract_period
+
+          ref = datetime(2024, 6, 15, 12, 0, 0)
+
+          for query in ("先週", "一昨日", "来月"):
+              ja = extract_japanese_period(query, ref)
+              assert ja is not None, f"JA miss: {query!r}"
+              routed = extract_period(query, ref)
+              assert routed is not None, f"router miss: {query!r}"
+              assert routed == ja, f"router/JA mismatch for {query!r}: {routed!r} vs {ja!r}"
+
+          result = extract_period("昨日の会議", ref)
+          assert result is not None, "昨日の会議 must extract"
+          print("in-image JA probe ok")
+          PY
+          docker run --rm -v "$PROBE:/tmp/probe.py:ro" --entrypoint python \
+            hindsight-api:ja-probe /tmp/probe.py
+
+      - name: Push version tag
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/standalone/Dockerfile
+          target: api-only
+          build-args: |
+            INCLUDE_LOCAL_MODELS=false
+            PRELOAD_ML_MODELS=false
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/x0y14/hindsight-api:${{ needs.guard.outputs.version }}-slim
+          labels: |
+            org.opencontainers.image.version=${{ needs.guard.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push latest-slim
+        if: needs.guard.outputs.update_latest == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/standalone/Dockerfile
+          target: api-only
+          build-args: |
+            INCLUDE_LOCAL_MODELS=false
+            PRELOAD_ML_MODELS=false
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/x0y14/hindsight-api:latest-slim
+          labels: |
+            org.opencontainers.image.version=${{ needs.guard.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+
+      - name: Resolve digest
+        id: digest
+        run: |
+          set -euo pipefail
+          DIGEST=$(docker buildx imagetools inspect \
+            "ghcr.io/x0y14/hindsight-api:${VERSION}-slim" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "DIGEST=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Published ghcr.io/x0y14/hindsight-api:${VERSION}-slim@$DIGEST"
+
+      - name: Create or update GitHub Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DIGEST: ${{ steps.digest.outputs.DIGEST }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          BASE="${VERSION%-ja}"
+          NOTES_FILE=$(mktemp)
+
+          {
+            echo "## Summary"
+            echo ""
+            echo "Upstream **v${BASE}** plus Japanese temporal period extraction for recall."
+            echo ""
+            echo "Base: [\`v${BASE}\`](https://github.com/vectorize-io/hindsight/releases/tag/v${BASE})"
+            echo ""
+            echo "### Changes vs v${BASE}"
+            echo ""
+            echo "- Add \`japanese_temporal_periods.py\` so recall parses closed Japanese compounds (\`先週\` / \`来月\` / \`一昨日\` / kana aliases) before Chinese rules and the English-only dateparser scorer."
+            echo "- Matching contract aligned with Chinese: recurring → open/since → closed longest-first; \`中\`/\`内\` as stem suffixes; short \`曜\` covered."
+            echo "- Minimal Chinese patches for shared forms (\`昨日の会議\`, \`(?<!一)昨日\`)."
+            echo ""
+            echo "This is a fork overlay release (\`x0y14/hindsight\`), not an upstream PyPI/npm cut."
+            echo ""
+            echo "### Container image"
+            echo ""
+            echo "- Image: \`ghcr.io/x0y14/hindsight-api:${VERSION}-slim@${DIGEST}\`"
+            if [ "${UPDATE_LATEST}" = "true" ]; then
+              echo "- Also tagged: \`ghcr.io/x0y14/hindsight-api:latest-slim\`"
+            fi
+            echo ""
+            echo "### Deploy note"
+            echo ""
+            echo "Do **not** helm-install or compose from this fork tree as-is: chart/compose defaults still point at upstream images. Pull the overlay image above explicitly."
+          } > "$NOTES_FILE"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE"
+          fi

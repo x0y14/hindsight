@@ -167,6 +167,7 @@ def test_corpus_is_deduplicated_and_complete() -> None:
         "period_ru",
         "month_year",
         "period_zh",
+        "period_ja",
         "cjk_embedded",
         "explicit_date",
         "long_text",
@@ -195,11 +196,11 @@ def test_analyzer_and_wrapper_agree(analyzer) -> None:
 
 def test_language_restricted_analyzer_matches_on_fastpath(analyzer) -> None:
     """Pinning languages must not change results that never reach dateparser."""
-    from tests.query_analyzer_corpus import PERIOD_EN, PERIOD_RU, PERIOD_ZH
+    from tests.query_analyzer_corpus import PERIOD_EN, PERIOD_JA, PERIOD_RU, PERIOD_ZH
 
-    pinned = DateparserQueryAnalyzer(languages=["en", "es", "it", "fr", "de", "ru", "zh"])
+    pinned = DateparserQueryAnalyzer(languages=["en", "es", "it", "fr", "de", "ru", "zh", "ja"])
     ref = REFERENCE_DATES[0]
-    for query in PERIOD_EN + PERIOD_RU + PERIOD_ZH:
+    for query in PERIOD_EN + PERIOD_RU + PERIOD_ZH + PERIOD_JA:
         assert analyzer.analyze(query, ref) == pinned.analyze(query, ref), query
 
 

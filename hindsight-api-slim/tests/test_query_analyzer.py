@@ -780,6 +780,132 @@ def test_query_analyzer_chinese_compound_word_false_positives(query_analyzer, qu
     assert analysis.temporal_constraint is None
 
 
+@pytest.mark.parametrize(
+    ("query", "start", "end"),
+    [
+        ("先週の会議", datetime(2025, 1, 6), datetime(2025, 1, 12)),
+        ("今週", datetime(2025, 1, 13), datetime(2025, 1, 19)),
+        ("来週", datetime(2025, 1, 20), datetime(2025, 1, 26)),
+        ("先々週", datetime(2024, 12, 30), datetime(2025, 1, 5)),
+        ("再来週", datetime(2025, 1, 27), datetime(2025, 2, 2)),
+        ("先月", datetime(2024, 12, 1), datetime(2024, 12, 31)),
+        ("今月", datetime(2025, 1, 1), datetime(2025, 1, 31)),
+        ("来月", datetime(2025, 2, 1), datetime(2025, 2, 28)),
+        ("来年", datetime(2026, 1, 1), datetime(2026, 12, 31)),
+        ("来年的计划", datetime(2026, 1, 1), datetime(2026, 12, 31)),
+        ("一昨年", datetime(2023, 1, 1), datetime(2023, 12, 31)),
+        ("再来年", datetime(2027, 1, 1), datetime(2027, 12, 31)),
+        ("先週末", datetime(2025, 1, 11), datetime(2025, 1, 12)),
+        ("今週末", datetime(2025, 1, 18), datetime(2025, 1, 19)),
+        ("来週末", datetime(2025, 1, 25), datetime(2025, 1, 26)),
+        ("昨日の会議", datetime(2025, 1, 14), datetime(2025, 1, 14)),
+        ("数日前", datetime(2025, 1, 10), datetime(2025, 1, 13)),
+    ],
+)
+def test_query_analyzer_japanese_periods(query_analyzer, query, start, end):
+    """Deterministic Japanese period extraction aligned with EN/ZH meaning slots."""
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+
+    analysis = query_analyzer.analyze(query, reference_date)
+
+    assert analysis.temporal_constraint is not None
+    assert analysis.temporal_constraint.start_date.date() == start.date()
+    assert analysis.temporal_constraint.end_date.date() == end.date()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("一昨日", datetime(2025, 1, 13)),
+        ("明後日", datetime(2025, 1, 17)),
+        ("きのう", datetime(2025, 1, 14)),
+        ("きょう", datetime(2025, 1, 15)),
+        ("あした", datetime(2025, 1, 16)),
+        ("おととい", datetime(2025, 1, 13)),
+        ("あさって", datetime(2025, 1, 17)),
+        ("月曜日", datetime(2025, 1, 13)),
+        ("先週の月曜日", datetime(2025, 1, 6)),
+        ("3日前", datetime(2025, 1, 12)),
+        ("2週間前", datetime(2025, 1, 1)),
+        ("1ヶ月前", datetime(2024, 12, 15)),
+        ("1か月前", datetime(2024, 12, 15)),
+        ("三日後", datetime(2025, 1, 18)),
+    ],
+)
+def test_query_analyzer_japanese_exact_relative_periods(query_analyzer, query, expected):
+    """Japanese exact relative days, counters, weekdays, and kana aliases."""
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+
+    analysis = query_analyzer.analyze(query, reference_date)
+
+    assert analysis.temporal_constraint is not None
+    assert analysis.temporal_constraint.start_date.date() == expected.date()
+    assert analysis.temporal_constraint.end_date.date() == expected.date()
+
+
+def test_query_analyzer_japanese_ototoi_is_not_yesterday(query_analyzer):
+    """一昨日 must not collapse to the Chinese 昨日 substring match."""
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+
+    ototoi = query_analyzer.analyze("一昨日", reference_date)
+    kinou = query_analyzer.analyze("昨日", reference_date)
+
+    assert ototoi.temporal_constraint is not None
+    assert kinou.temporal_constraint is not None
+    assert ototoi.temporal_constraint.start_date.date() == datetime(2025, 1, 13).date()
+    assert kinou.temporal_constraint.start_date.date() == datetime(2025, 1, 14).date()
+    assert ototoi.temporal_constraint.start_date.date() != kinou.temporal_constraint.start_date.date()
+
+
+def test_query_analyzer_japanese_weekends_are_distinct(query_analyzer):
+    """Prefixed weekends must not all fall through to bare 週末."""
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+
+    last_weekend = query_analyzer.analyze("先週末", reference_date)
+    this_weekend = query_analyzer.analyze("今週末", reference_date)
+    next_weekend = query_analyzer.analyze("来週末", reference_date)
+
+    assert last_weekend.temporal_constraint is not None
+    assert this_weekend.temporal_constraint is not None
+    assert next_weekend.temporal_constraint is not None
+    windows = {
+        (
+            last_weekend.temporal_constraint.start_date.date(),
+            last_weekend.temporal_constraint.end_date.date(),
+        ),
+        (
+            this_weekend.temporal_constraint.start_date.date(),
+            this_weekend.temporal_constraint.end_date.date(),
+        ),
+        (
+            next_weekend.temporal_constraint.start_date.date(),
+            next_weekend.temporal_constraint.end_date.date(),
+        ),
+    }
+    assert len(windows) == 3
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "先生",
+        "未来",
+        "今回",
+        "来場",
+        "毎週月曜",
+        "来週から",
+        "明日以降",
+    ],
+)
+def test_query_analyzer_japanese_false_positives(query_analyzer, query):
+    """Closed-compound rules must not fire on recurring or open Japanese forms."""
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+
+    analysis = query_analyzer.analyze(query, reference_date)
+
+    assert analysis.temporal_constraint is None
+
+
 def test_query_analyzer_couple_weeks_ago(query_analyzer):
     """Test extraction of 'a couple of weeks ago' colloquial expression."""
     reference_date = datetime(2025, 1, 15, 12, 0, 0)

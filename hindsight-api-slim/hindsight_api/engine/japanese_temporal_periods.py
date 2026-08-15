@@ -5,6 +5,12 @@ Japanese relative periods use a different prefix system from Chinese
 Japanese compounds are matched here before falling through to Chinese rules.
 Hiragana aliases are also handled here because kana alone does not enter the
 CJK ideograph route in extract_period.
+
+Matching contract mirrors Chinese (recurring → open/since → closed longest-first):
+1. Recurring 毎… forms return the sentinel so they never invent a single day/week.
+2. Open starts (から/以降) over the full compound catalog return the sentinel.
+3. Closed ranges match longest compounds first; optional 中/内/以内 is a stem
+   suffix, not a generic follower character (来週中村 must not become 来週).
 """
 
 from __future__ import annotations
@@ -30,9 +36,13 @@ _JAPANESE_NUMERAL_CHARS = "一二三四五六七八九十百千"
 _JAPANESE_NUMERAL_PREFIX = f"0-9{_JAPANESE_NUMERAL_CHARS}"
 _MONTH_UNIT = r"(?:ヶ月|か月|ヵ月|カ月)"
 _OPEN_SUFFIX = r"(?:から先|から|以降)"
-_WEEKDAY_NAMES = ("月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日")
-_WEEKDAY_INDEX = {name: index for index, name in enumerate(_WEEKDAY_NAMES)}
-_WEEKDAY_PATTERN = "|".join(_WEEKDAY_NAMES)
+# 以内 before 内 so 今月以内 is not truncated to 今月内.
+_STEM_DURATION = r"(?:以内|中|内)?"
+_WEEKDAY_BASES = ("月曜", "火曜", "水曜", "木曜", "金曜", "土曜", "日曜")
+_WEEKDAY_INDEX = {f"{base}日": index for index, base in enumerate(_WEEKDAY_BASES)}
+_WEEKDAY_PATTERN = "|".join(f"{base}(?:日)?" for base in _WEEKDAY_BASES)
+_RELATIVE_WEEKDAY = rf"(?:(先々|再来|先|今|来)?週の({_WEEKDAY_PATTERN}))"
+_WEEK_NOT_COMPOUND = r"(?!末)(?!の(?:曜(?:日)?))"
 
 
 def extract_japanese_period(query: str, reference_date: datetime) -> DateRange | NoTemporalConstraintSentinel | None:
@@ -144,37 +154,46 @@ def extract_japanese_period(query: str, reference_date: datetime) -> DateRange |
         return safe_constraint(d, d)
 
     def weekday_period(week_offset: int, weekday_name: str) -> DateRange | None:
-        weekday = _WEEKDAY_INDEX.get(weekday_name)
+        full_name = weekday_name if weekday_name.endswith("日") else f"{weekday_name}日"
+        weekday = _WEEKDAY_INDEX.get(full_name)
         if weekday is None:
             return None
         d = week_start(week_offset) + timedelta(days=weekday)
         return constraint(d, d)
 
-    # Open future/past starts must become the sentinel before closed periods match.
-    # Returning None would fall through to dateparser; Chinese uses the same pattern.
+    # 1. Recurring forms — one regex so 毎週月曜日 is not split into 毎週 + bare 月曜日.
+    # 週末 before 週 so 毎週末 does not fall through to Chinese 周末.
+    if japanese_search(rf"毎(?:週末|週|月|日|年)(?:の)?(?:{_WEEKDAY_PATTERN})?"):
+        return NO_TEMPORAL_CONSTRAINT
+
+    # 2. Open/since over the full catalog (including short 曜 and relative weekdays).
     open_period_stems = (
         r"先々週末|先週末|今週末|来週末|"
+        rf"{_RELATIVE_WEEKDAY}|"
         r"先々週|再来週|先週|今週|来週|"
         r"先々月|再来月|先月|今月|来月|"
         r"一昨年|再来年|来年|"
         r"一昨日|明後日|昨日|今日|明日|"
-        r"きのう|きょう|あした|おととい|あさって|" + f"(?:{_WEEKDAY_PATTERN})"
+        r"きのう|きょう|あした|おととい|あさって|"
+        rf"(?:{_WEEKDAY_PATTERN})"
     )
-    if japanese_search(rf"(?:{open_period_stems}){_OPEN_SUFFIX}"):
+    if japanese_search(rf"(?:{open_period_stems}){_STEM_DURATION}{_OPEN_SUFFIX}"):
         return NO_TEMPORAL_CONSTRAINT
 
+    # 3. Closed ranges, longest-first. Optional 中/内/以内 is a stem suffix.
+
     # Prefixed weekends before bare week compounds (先週末 must not become 先週).
-    if japanese_search(r"先々週末"):
+    if japanese_search(rf"先々週末{_STEM_DURATION}"):
         return weekend_period(-2)
-    if japanese_search(r"先週末"):
+    if japanese_search(rf"先週末{_STEM_DURATION}"):
         return weekend_period(-1)
-    if japanese_search(r"今週末"):
+    if japanese_search(rf"今週末{_STEM_DURATION}"):
         return weekend_period(0)
-    if japanese_search(r"来週末"):
+    if japanese_search(rf"来週末{_STEM_DURATION}"):
         return weekend_period(1)
 
-    # Weekday with relative week prefix before bare 先週 (先週の月曜日 ≠ 先週).
-    relative_weekday = japanese_search(rf"(先々|再来|先|今|来)?週の({_WEEKDAY_PATTERN})")
+    # Relative weekday before bare 先週 (先週の月曜日 ≠ 先週; short 曜 included).
+    relative_weekday = japanese_search(rf"{_RELATIVE_WEEKDAY}{_STEM_DURATION}")
     if relative_weekday:
         prefix = relative_weekday.group(1)
         week_offset = {
@@ -189,40 +208,40 @@ def extract_japanese_period(query: str, reference_date: datetime) -> DateRange |
         if result is not None:
             return result
 
-    # Relative week / month / year closed compounds. Reject 毎X (recurring).
-    if japanese_search(r"(?<!毎)先々週"):
+    # Relative week / month / year. Reject compound tails and recurring 毎X.
+    if japanese_search(rf"(?<!毎)先々週{_WEEK_NOT_COMPOUND}{_STEM_DURATION}"):
         return week_period(-2)
-    if japanese_search(r"(?<!毎)再来週"):
+    if japanese_search(rf"(?<!毎)再来週{_WEEK_NOT_COMPOUND}{_STEM_DURATION}"):
         return week_period(2)
-    if japanese_search(r"(?<!毎)先週"):
+    if japanese_search(rf"(?<!毎)先週{_WEEK_NOT_COMPOUND}{_STEM_DURATION}"):
         return week_period(-1)
-    if japanese_search(r"(?<!毎)今週"):
+    if japanese_search(rf"(?<!毎)今週{_WEEK_NOT_COMPOUND}{_STEM_DURATION}"):
         return week_period(0)
-    if japanese_search(r"(?<!毎)来週"):
+    if japanese_search(rf"(?<!毎)来週{_WEEK_NOT_COMPOUND}{_STEM_DURATION}"):
         return week_period(1)
 
-    if japanese_search(r"(?<!毎)先々月"):
+    if japanese_search(rf"(?<!毎)先々月{_STEM_DURATION}"):
         return month_period(-2)
-    if japanese_search(r"(?<!毎)再来月"):
+    if japanese_search(rf"(?<!毎)再来月{_STEM_DURATION}"):
         return month_period(2)
-    if japanese_search(r"(?<!毎)先月"):
+    if japanese_search(rf"(?<!毎)先月{_STEM_DURATION}"):
         return month_period(-1)
-    if japanese_search(r"(?<!毎)今月"):
+    if japanese_search(rf"(?<!毎)今月{_STEM_DURATION}"):
         return month_period(0)
-    if japanese_search(r"(?<!毎)来月"):
+    if japanese_search(rf"(?<!毎)来月{_STEM_DURATION}"):
         return month_period(1)
 
-    if japanese_search(r"(?<!毎)一昨年"):
+    if japanese_search(rf"(?<!毎)一昨年{_STEM_DURATION}"):
         return year_period(-2)
-    if japanese_search(r"(?<!毎)再来年"):
+    if japanese_search(rf"(?<!毎)再来年{_STEM_DURATION}"):
         return year_period(2)
-    if japanese_search(r"(?<!毎)来年"):
+    if japanese_search(rf"(?<!毎)来年{_STEM_DURATION}"):
         return year_period(1)
 
     # Longer day compounds before short shared forms handled by Chinese.
-    if japanese_search(r"一昨日"):
+    if japanese_search(rf"一昨日{_STEM_DURATION}"):
         return day_period(-2)
-    if japanese_search(r"明後日"):
+    if japanese_search(rf"明後日{_STEM_DURATION}"):
         return day_period(2)
 
     # Exact counters (Arabic or Japanese numerals).
@@ -273,7 +292,7 @@ def extract_japanese_period(query: str, reference_date: datetime) -> DateRange |
     if japanese_search(r"数日前"):
         return constraint(reference_date - timedelta(days=5), reference_date - timedelta(days=2))
 
-    bare_weekday = japanese_search(rf"(?<!毎)({_WEEKDAY_PATTERN})")
+    bare_weekday = japanese_search(rf"(?<!毎)({_WEEKDAY_PATTERN}){_STEM_DURATION}")
     if bare_weekday:
         result = weekday_period(0, bare_weekday.group(1))
         if result is not None:
@@ -289,7 +308,7 @@ def extract_japanese_period(query: str, reference_date: datetime) -> DateRange |
     }
     # Longer forms first so おととい is not partially matched.
     for kana, offset in sorted(kana_day_offsets.items(), key=lambda item: -len(item[0])):
-        if japanese_search(re.escape(kana)):
+        if japanese_search(rf"{re.escape(kana)}{_STEM_DURATION}"):
             return day_period(offset)
 
     return None

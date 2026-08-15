@@ -906,6 +906,96 @@ def test_query_analyzer_japanese_false_positives(query_analyzer, query):
     assert analysis.temporal_constraint is None
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "毎週月曜日",
+        "毎週の月曜日",
+        "毎週月曜日の会議",
+        "毎日月曜日",
+        "毎週末",
+        "毎週月曜日から",
+        "先週の月曜日から",
+        "先週の月曜から",
+        "今週の月曜から",
+        "昨日から",
+        "来週から",
+        "先週末から",
+    ],
+)
+def test_japanese_extract_period_sentinels(query):
+    """Recurring and open forms must return the sentinel, not a closed window."""
+    from hindsight_api.engine.temporal_periods import NO_TEMPORAL_CONSTRAINT, extract_period
+
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+    assert extract_period(query, reference_date) is NO_TEMPORAL_CONSTRAINT
+
+
+@pytest.mark.parametrize(
+    ("query", "start", "end"),
+    [
+        ("今月中の会議", datetime(2025, 1, 1), datetime(2025, 1, 31)),
+        ("今月中に", datetime(2025, 1, 1), datetime(2025, 1, 31)),
+        ("来週中に", datetime(2025, 1, 20), datetime(2025, 1, 26)),
+        ("今週中", datetime(2025, 1, 13), datetime(2025, 1, 19)),
+        ("来月中の予定", datetime(2025, 2, 1), datetime(2025, 2, 28)),
+        ("今週の月曜", datetime(2025, 1, 13), datetime(2025, 1, 13)),
+        ("先週の月曜日", datetime(2025, 1, 6), datetime(2025, 1, 6)),
+        ("先週末", datetime(2025, 1, 11), datetime(2025, 1, 12)),
+        ("先週", datetime(2025, 1, 6), datetime(2025, 1, 12)),
+    ],
+)
+def test_japanese_extract_period_closed_ranges(query, start, end):
+    """Stem-suffix 中/内 and short 曜 closed forms must keep calendar windows."""
+    from hindsight_api.engine.temporal_periods import extract_period
+
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+    result = extract_period(query, reference_date)
+    assert isinstance(result, tuple)
+    assert result[0].date() == start.date()
+    assert result[1].date() == end.date()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "先生",
+        "未来",
+        "今回",
+        "来場",
+        "来週中村",
+        "来週内容",
+        "今月中旬",
+    ],
+)
+def test_japanese_extract_period_false_positives(query):
+    """Non-temporal compounds and name-like tails must not match."""
+    from hindsight_api.engine.temporal_periods import extract_period
+
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+    assert extract_period(query, reference_date) is None
+
+
+@pytest.mark.parametrize(
+    ("query", "start", "end"),
+    [
+        ("每周一开会", None, None),  # Chinese recurring → sentinel → analyze None
+        ("本月中了奖", datetime(2025, 1, 1), datetime(2025, 1, 31)),
+        ("中旬的记录", datetime(2025, 1, 11), datetime(2025, 1, 20)),
+    ],
+)
+def test_japanese_route_preserves_chinese_non_regression(query_analyzer, query, start, end):
+    """JA routing must not steal Chinese recurring or mid-month forms."""
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+    analysis = query_analyzer.analyze(query, reference_date)
+    if start is None:
+        assert analysis.temporal_constraint is None
+        return
+    assert analysis.temporal_constraint is not None
+    assert analysis.temporal_constraint.start_date.date() == start.date()
+    assert analysis.temporal_constraint.end_date.date() == end.date()
+
+
 def test_query_analyzer_couple_weeks_ago(query_analyzer):
     """Test extraction of 'a couple of weeks ago' colloquial expression."""
     reference_date = datetime(2025, 1, 15, 12, 0, 0)

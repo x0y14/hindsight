@@ -1,9 +1,9 @@
 """Explicit period extraction helpers for DateparserQueryAnalyzer.
 
 This module keeps the public period-extraction API and the non-Chinese period
-rules. Chinese rules live in chinese_temporal_periods.py because that rule set is
-substantially larger and has different boundary behavior from whitespace-based
-languages.
+rules. Chinese rules live in chinese_temporal_periods.py and Japanese rules in
+japanese_temporal_periods.py because those rule sets are substantially larger
+and have different boundary behavior from whitespace-based languages.
 """
 
 import calendar
@@ -29,6 +29,10 @@ __all__ = [
 
 def _is_cjk_character(char: str) -> bool:
     return "\u4e00" <= char <= "\u9fff"
+
+
+def _is_kana_character(char: str) -> bool:
+    return ("\u3040" <= char <= "\u309f") or ("\u30a0" <= char <= "\u30ff")
 
 
 def is_embedded_cjk_dateparser_match(query: str, matched_text: str) -> bool:
@@ -178,12 +182,25 @@ def _extract_non_chinese_period(
 def extract_period(query: str, reference_date: datetime) -> DateRange | NoTemporalConstraintSentinel | None:
     """Extract explicit period-based temporal expressions.
 
-    Non-Chinese rules are kept here. Chinese rules are delegated to
-    chinese_temporal_periods.py and are skipped entirely for non-CJK queries.
+    Non-CJK rules are kept here. Japanese closed compounds are tried first when
+    the query has kana or CJK ideographs (Japanese prefixes differ from Chinese).
+    Remaining CJK queries fall through to chinese_temporal_periods.py.
     """
     query = unicodedata.normalize("NFKC", query)
 
-    if any(_is_cjk_character(char) for char in query):
+    has_cjk = any(_is_cjk_character(char) for char in query)
+    has_kana = any(_is_kana_character(char) for char in query)
+
+    # Japanese uses 先/来/今 prefixes and hiragana aliases that Chinese rules miss
+    # or mis-parse (一昨日 ⊂ 昨日). Match closed JA compounds before Chinese.
+    if has_cjk or has_kana:
+        from hindsight_api.engine.japanese_temporal_periods import extract_japanese_period
+
+        japanese_result = extract_japanese_period(query, reference_date)
+        if japanese_result is not None:
+            return japanese_result
+
+    if has_cjk:
         from hindsight_api.engine.chinese_temporal_periods import extract_chinese_period
 
         chinese_result = extract_chinese_period(query, reference_date)

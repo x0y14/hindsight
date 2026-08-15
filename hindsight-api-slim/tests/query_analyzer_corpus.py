@@ -293,6 +293,44 @@ PERIOD_ZH = [
     "礼拜一",
 ]
 
+# --------------------------------------------------------------------------
+# 3b. Japanese period rules (japanese_temporal_periods.py).
+# Meaning-aligned with EN/ZH relative slots; not a 1:1 copy of PERIOD_ZH.
+# --------------------------------------------------------------------------
+PERIOD_JA = [
+    "昨日",
+    "昨日の会議",
+    "今日",
+    "一昨日",
+    "明後日",
+    "先週",
+    "先週の会議",
+    "今週",
+    "来週",
+    "先々週",
+    "再来週",
+    "先月",
+    "今月",
+    "来月",
+    "来年",
+    "一昨年",
+    "再来年",
+    "先週末",
+    "今週末",
+    "来週末",
+    "3日前",
+    "2週間前",
+    "1ヶ月前",
+    "数日前",
+    "月曜日",
+    "先週の月曜日",
+    "きのう",
+    "きょう",
+    "あした",
+    "おととい",
+    "あさって",
+]
+
 # CJK text where dateparser used to match an embedded substring.
 CJK_EMBEDDED = [
     "上海的天气",
@@ -423,6 +461,7 @@ def build_corpus() -> list[tuple[str, str]]:
         (PERIOD_RU, "period_ru"),
         (MONTH_YEAR, "month_year"),
         (PERIOD_ZH, "period_zh"),
+        (PERIOD_JA, "period_ja"),
         (CJK_EMBEDDED, "cjk_embedded"),
         (EXPLICIT_DATES, "explicit_date"),
         (LONG_TEXTS, "long_text"),
@@ -449,7 +488,14 @@ def build_corpus() -> list[tuple[str, str]]:
 def build_query_workload() -> list[str]:
     """Query-shaped input: what a user (or an agent) actually types into recall."""
     return (
-        NON_TEMPORAL_EN * 3 + TZ_ABBREV_TRAPS * 2 + PERIOD_EN + PERIOD_ZH + PERIOD_RU + EXPLICIT_DATES + MONTH_YEAR[:20]
+        NON_TEMPORAL_EN * 3
+        + TZ_ABBREV_TRAPS * 2
+        + PERIOD_EN
+        + PERIOD_ZH
+        + PERIOD_JA
+        + PERIOD_RU
+        + EXPLICIT_DATES
+        + MONTH_YEAR[:20]
     )
 
 

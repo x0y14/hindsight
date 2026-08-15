@@ -24,6 +24,9 @@ _CHINESE_TEMPORAL_FOLLOWER_CHARS = frozenset(
     " \t\r\n"
     ".,!?;:()[]{}<>\"'"
     "，。！？；：（）【】《》“”‘’、"
+    # Japanese particles so shared forms like 昨日の会議 keep Chinese matches.
+    # Omit か so open forms like 昨日から are not treated as closed periods.
+    "のはがをにでともへ"
     "的得地了过着吗呢吧呀啊嘛么和及与或至到起内里中时后前份"
     "有要去做干说聊谈讨论查找看问见给提记想开买吃喝玩用学写发订安排"
     "帮测试部署收入申请下雨代码改动工资回总复统整比哪怎什谁几多少会活事项费录信消新天计划我你他她它咱"
@@ -528,9 +531,9 @@ def extract_chinese_period(query: str, reference_date: datetime) -> DateRange | 
         return constraint(reference_date - timedelta(days=1), reference_date)
 
     day_range_match = chinese_search(
-        rf"(大大后天|大后天|后天|明天|明日|今天|今日|本日|昨天|昨日|大大前天|大前天|前天)"
+        rf"(大大后天|大后天|后天|明天|明日|今天|今日|本日|昨天|(?<!一)昨日|大大前天|大前天|前天)"
         rf"{chinese_range_separator}"
-        r"(大大后天|大后天|后天|明天|明日|今天|今日|本日|昨天|昨日|大大前天|大前天|前天)"
+        r"(大大后天|大后天|后天|明天|明日|今天|今日|本日|昨天|(?<!一)昨日|大大前天|大前天|前天)"
     )
     if day_range_match:
         first = reference_date + timedelta(days=fixed_day_offset(day_range_match.group(1)))
@@ -797,7 +800,7 @@ def extract_chinese_period(query: str, reference_date: datetime) -> DateRange | 
 
     relative_year_fixed_day_since_match = chinese_search(
         rf"({relative_year_pattern})\s*"
-        rf"(大大后天|大后天|后天|明天|明日|今天|今日|本日|当日|当天|昨天|昨日|大大前天|大前天|前天)"
+        rf"(大大后天|大后天|后天|明天|明日|今天|今日|本日|当日|当天|昨天|(?<!一)昨日|大大前天|大前天|前天)"
         rf"{chinese_since_suffix_pattern}"
     )
     if relative_year_fixed_day_since_match:
@@ -807,7 +810,7 @@ def extract_chinese_period(query: str, reference_date: datetime) -> DateRange | 
         return safe_since_constraint(d)
 
     fixed_day_since_match = chinese_search(
-        rf"(大大后天|大后天|后天|明天|明日|今天|今日|本日|当日|当天|昨天|昨日|大大前天|大前天|前天)"
+        rf"(大大后天|大后天|后天|明天|明日|今天|今日|本日|当日|当天|昨天|(?<!一)昨日|大大前天|大前天|前天)"
         rf"{chinese_since_suffix_pattern}"
     )
     if fixed_day_since_match:
@@ -958,7 +961,7 @@ def extract_chinese_period(query: str, reference_date: datetime) -> DateRange | 
 
     relative_year_fixed_day_match = chinese_search(
         rf"({relative_year_pattern})\s*"
-        r"(大大后天|大后天|后天|明天|明日|今天|今日|本日|当日|当天|昨天|昨日|大大前天|大前天|前天)"
+        r"(大大后天|大后天|后天|明天|明日|今天|今日|本日|当日|当天|昨天|(?<!一)昨日|大大前天|大前天|前天)"
     )
     if relative_year_fixed_day_match:
         year = relative_year_number(relative_year_fixed_day_match.group(1))
@@ -966,7 +969,7 @@ def extract_chinese_period(query: str, reference_date: datetime) -> DateRange | 
         d = add_days(base, fixed_day_offset(relative_year_fixed_day_match.group(2)))
         return safe_constraint(d, d)
 
-    if chinese_search(r"昨天|昨日"):
+    if chinese_search(r"昨天|(?<!一)昨日"):
         d = reference_date - timedelta(days=1)
         return constraint(d, d)
 

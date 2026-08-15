@@ -11,6 +11,11 @@ Matching contract mirrors Chinese (recurring → open/since → closed longest-f
 2. Open starts (から/以降) over the full compound catalog return the sentinel.
 3. Closed ranges match longest compounds first; optional 中/内/以内 is a stem
    suffix, not a generic follower character (来週中村 must not become 来週).
+
+Independence of a catalog match is a UniDic **character** boundary oracle
+(match.start()/end() in the token-bound set), not a one-character follower
+whitelist. The whitelist remains only when fugashi/unidic-lite is missing.
+A one-token match is not required: UniDic splits 先週末 into 先週+末.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import re
 import unicodedata
 from datetime import datetime, timedelta
 
+from hindsight_api.engine.japanese_morph_tokens import JapaneseMorphTokens, tokenize_japanese
 from hindsight_api.engine.temporal_periods import NO_TEMPORAL_CONSTRAINT, DateRange, NoTemporalConstraintSentinel
 
 _JAPANESE_TEMPORAL_FOLLOWER_CHARS = frozenset(
@@ -45,9 +51,47 @@ _RELATIVE_WEEKDAY = rf"(?:(先々|再来|先|今|来)?週の({_WEEKDAY_PATTERN})
 _WEEK_NOT_COMPOUND = r"(?!末)(?!の(?:曜(?:日)?))"
 
 
+def _is_kana_character(char: str) -> bool:
+    return ("\u3040" <= char <= "\u309f") or ("\u30a0" <= char <= "\u30ff")
+
+
+def _is_hiragana_character(char: str) -> bool:
+    return "\u3040" <= char <= "\u309f"
+
+
+# Surfaces allowed immediately after a kana day stem. Omit か (open きのうか).
+# にて is one UniDic token; without it, きのうにて会議 regresses.
+# から is not listed: open/since (から/以降) runs before closed kana stems.
+_KANA_STEM_FOLLOWER_SURFACES = frozenset("のはがをにでともへ") | frozenset({"にて"})
+
+
+def _kana_stem_continuation_ok(query: str, match_end: int, morph: JapaneseMorphTokens) -> bool:
+    """Accept a kana stem when the next token is not still the same word.
+
+    UniDic splits きょうのう as きょう+のう. Morph alignment alone would
+    accept きょう. Distinguish by surface: の is a case particle (きょうの),
+    のう is not. Do not use POS — のう is also 助詞 — and do not require a
+    non-kana character after a particle (that rejects きょうの at EOS and
+    きのうのミーティング). Katakana, kanji, punctuation, and ー are word
+    boundaries (きのうミーティング, きょうー), matching 先週ミーティング / 今日ー.
+    """
+    if match_end >= len(query):
+        return True
+    next_char = query[match_end]
+    if not _is_hiragana_character(next_char):
+        return True
+    next_token = morph.token_at(match_end)
+    if next_token is None:
+        return False
+    return next_token.surface in _KANA_STEM_FOLLOWER_SURFACES
+
+
 def extract_japanese_period(query: str, reference_date: datetime) -> DateRange | NoTemporalConstraintSentinel | None:
     """Extract Japanese period-based temporal expressions as closed date ranges."""
     query = unicodedata.normalize("NFKC", query)
+    has_kana = any(_is_kana_character(char) for char in query)
+    # Tokenize the same NFKC string the regexes see. None → follower whitelist.
+    morph = tokenize_japanese(query)
 
     def constraint(start: datetime, end: datetime) -> DateRange:
         return (
@@ -80,14 +124,28 @@ def extract_japanese_period(query: str, reference_date: datetime) -> DateRange |
         except OverflowError:
             return None
 
-    def has_japanese_temporal_context(match: re.Match[str]) -> bool:
+    def has_japanese_temporal_context(match: re.Match[str], *, kana_stem: bool = False) -> bool:
+        # Prefer UniDic char bounds over the one-character follower whitelist.
+        # 何 and katakana (ミーティング) were never in that set, so 先週何 / 先週ミーティング
+        # missed. match.start()/end() must both be token boundaries; a one-token
+        # span is not required (先週末 = 先週+末).
+        #
+        # Greedy _STEM_DURATION plus non-overlapping finditer is what keeps
+        # 来週中村 None: UniDic splits 来週|中村, the regex consumes 来週中, end=3
+        # is not a bound, and finditer does not retry bare 来週 at 0.
+        if morph is not None:
+            if match.start() not in morph.bounds or match.end() not in morph.bounds:
+                return False
+            if kana_stem:
+                return _kana_stem_continuation_ok(query, match.end(), morph)
+            return True
         if match.end() >= len(query):
             return True
         return query[match.end()] in _JAPANESE_TEMPORAL_FOLLOWER_CHARS
 
-    def japanese_search(pattern: str) -> re.Match[str] | None:
+    def japanese_search(pattern: str, *, kana_stem: bool = False) -> re.Match[str] | None:
         for match in re.finditer(pattern, query):
-            if has_japanese_temporal_context(match):
+            if has_japanese_temporal_context(match, kana_stem=kana_stem):
                 return match
         return None
 
@@ -244,6 +302,17 @@ def extract_japanese_period(query: str, reference_date: datetime) -> DateRange |
     if japanese_search(rf"明後日{_STEM_DURATION}"):
         return day_period(2)
 
+    # Shared 昨日/今日/明日 become JA closed ranges only when the query has kana
+    # (昨日何について). Bare 今日 and 明日方舟攻略 have no kana and stay on the
+    # Chinese path — no CJK follower-class routing.
+    if has_kana:
+        if japanese_search(rf"昨日{_STEM_DURATION}"):
+            return day_period(-1)
+        if japanese_search(rf"今日{_STEM_DURATION}"):
+            return day_period(0)
+        if japanese_search(rf"明日{_STEM_DURATION}"):
+            return day_period(1)
+
     # Exact counters (Arabic or Japanese numerals).
     exact_days_past = japanese_search(rf"(?<![{_JAPANESE_NUMERAL_PREFIX}])([0-9]+|[{_JAPANESE_NUMERAL_CHARS}]+)日[前]")
     if exact_days_past:
@@ -308,7 +377,7 @@ def extract_japanese_period(query: str, reference_date: datetime) -> DateRange |
     }
     # Longer forms first so おととい is not partially matched.
     for kana, offset in sorted(kana_day_offsets.items(), key=lambda item: -len(item[0])):
-        if japanese_search(rf"{re.escape(kana)}{_STEM_DURATION}"):
+        if japanese_search(rf"{re.escape(kana)}{_STEM_DURATION}", kana_stem=True):
             return day_period(offset)
 
     return None

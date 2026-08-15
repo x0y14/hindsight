@@ -966,6 +966,9 @@ def test_japanese_extract_period_closed_ranges(query, start, end):
         "来週中村",
         "来週内容",
         "今月中旬",
+        "きのうえに猫がいる",
+        "きょうだいと遊んだ",
+        "明日方舟攻略",
     ],
 )
 def test_japanese_extract_period_false_positives(query):
@@ -974,6 +977,26 @@ def test_japanese_extract_period_false_positives(query):
 
     reference_date = datetime(2025, 1, 15, 12, 0, 0)
     assert extract_period(query, reference_date) is None
+
+
+def test_japanese_period_falls_back_when_fugashi_import_fails(monkeypatch):
+    """Without UniDic, keep the whitelist: 先週の会議 matches, 先週何について does not."""
+    import hindsight_api.engine.japanese_morph_tokens as morph
+    from hindsight_api.engine.temporal_periods import extract_period
+
+    def fail_load():
+        raise ImportError("fugashi is not installed")
+
+    monkeypatch.setattr(morph, "_tagger", None)
+    monkeypatch.setattr(morph, "_tagger_unavailable", False)
+    monkeypatch.setattr(morph, "_load_tagger", fail_load)
+
+    reference_date = datetime(2025, 1, 15, 12, 0, 0)
+    result = extract_period("先週の会議", reference_date)
+    assert isinstance(result, tuple)
+    assert result[0].date() == datetime(2025, 1, 6).date()
+    assert result[1].date() == datetime(2025, 1, 12).date()
+    assert extract_period("先週何について", reference_date) is None
 
 
 @pytest.mark.parametrize(

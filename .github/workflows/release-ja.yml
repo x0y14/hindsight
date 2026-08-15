@@ -179,8 +179,8 @@ jobs:
       - name: In-image Japanese temporal probe
         run: |
           set -euo pipefail
-          PROBE=$(mktemp)
-          cat > "$PROBE" <<'PY'
+          # stdin avoids host mount permission issues with non-root image users.
+          docker run --rm -i --entrypoint python hindsight-api:ja-probe - <<'PY'
           from datetime import datetime
           from hindsight_api.engine.japanese_temporal_periods import extract_japanese_period
           from hindsight_api.engine.temporal_periods import extract_period
@@ -198,8 +198,6 @@ jobs:
           assert result is not None, "昨日の会議 must extract"
           print("in-image JA probe ok")
           PY
-          docker run --rm -v "$PROBE:/tmp/probe.py:ro" --entrypoint python \
-            hindsight-api:ja-probe /tmp/probe.py
 
       - name: Push version tag
         uses: docker/build-push-action@v7

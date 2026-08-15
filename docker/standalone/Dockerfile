@@ -57,13 +57,16 @@ RUN ln -s api hindsight-api-slim
 # Sync dependencies using appropriate extras based on INCLUDE_LOCAL_MODELS
 # local-ml: torch, sentence-transformers, transformers, einops, flashrank, mlx (optional)
 # embedded-db: pg0-embedded (always included for embedded PostgreSQL support)
+# ja-morph: fugashi + unidic-lite (Japanese char-boundary tokens). Must be on
+# every uv sync in this stage: an exact sync without the extra uninstalls the dict.
 # ONNX Runtime embeddings are intentionally not bundled into the official
 # standalone image; install the local-onnx extra in custom images when needed.
+# Do not vendor UniDic into hindsight_api/; the dict lives in unidic-lite.
 ENV UV_PROJECT_ENVIRONMENT=/app/api/.venv
 RUN if [ "$INCLUDE_LOCAL_MODELS" = "true" ]; then \
-        uv sync --locked --package hindsight-api-slim --no-install-package hindsight-api-slim --extra local-ml --extra embedded-db; \
+        uv sync --locked --package hindsight-api-slim --no-install-package hindsight-api-slim --extra local-ml --extra embedded-db --extra ja-morph; \
     else \
-        uv sync --locked --package hindsight-api-slim --no-install-package hindsight-api-slim --extra embedded-db; \
+        uv sync --locked --package hindsight-api-slim --no-install-package hindsight-api-slim --extra embedded-db --extra ja-morph; \
     fi
 
 # Copy source code (alembic migrations are inside hindsight_api/)
@@ -73,9 +76,9 @@ COPY hindsight-api-slim/hindsight_api ./hindsight_api
 # Install the local package from the same validated lock after source is present.
 WORKDIR /app
 RUN if [ "$INCLUDE_LOCAL_MODELS" = "true" ]; then \
-        uv sync --locked --package hindsight-api-slim --extra local-ml --extra embedded-db; \
+        uv sync --locked --package hindsight-api-slim --extra local-ml --extra embedded-db --extra ja-morph; \
     else \
-        uv sync --locked --package hindsight-api-slim --extra embedded-db; \
+        uv sync --locked --package hindsight-api-slim --extra embedded-db --extra ja-morph; \
     fi \
     && uv pip check --python /app/api/.venv/bin/python
 

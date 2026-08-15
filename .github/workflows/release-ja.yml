@@ -169,12 +169,13 @@ jobs:
           python-version-file: ".python-version"
 
       - name: Install dependencies
-        run: uv sync --frozen --extra embedded-db --index-strategy unsafe-best-match
+        run: uv sync --frozen --extra embedded-db --extra ja-morph --index-strategy unsafe-best-match
 
       - name: Run Japanese temporal / query analyzer tests
         # No LLM provider secrets. Exclude judge / matrix / slow marks.
         run: |
           uv run pytest tests/test_query_analyzer.py tests/test_temporal_extraction.py \
+            tests/test_japanese_morph_snapshot.py \
             -v -m "not hs_llm_mat and not hs_llm_core and not slow"
 
   build-and-push:
@@ -256,10 +257,16 @@ jobs:
         run: |
           set -euo pipefail
           # stdin avoids host mount permission issues with non-root image users.
+          # Probe is amd64 only (same as the load step). Morph Tagger() is also
+          # amd64-only here; do not treat a skipped arm64 probe as coverage.
           docker run --rm -i --entrypoint python hindsight-api:ja-probe - <<'PY'
           from datetime import datetime
+          from fugashi import Tagger
           from hindsight_api.engine.japanese_temporal_periods import extract_japanese_period
           from hindsight_api.engine.temporal_periods import extract_period
+
+          # Construct Tagger, not a mere import — missing UniDic would otherwise pass.
+          Tagger()
 
           ref = datetime(2024, 6, 15, 12, 0, 0)
 
@@ -272,6 +279,11 @@ jobs:
 
           result = extract_period("昨日の会議", ref)
           assert result is not None, "昨日の会議 must extract"
+
+          natural = extract_period("先週何について考えてた？", ref)
+          assert isinstance(natural, tuple), f"先週何について考えてた？ must be DateRange, got {natural!r}"
+          assert extract_period("きのうえに猫がいる", ref) is None, "きのうえに猫がいる must not extract"
+
           print("in-image JA probe ok")
           PY
 
@@ -341,14 +353,16 @@ jobs:
             echo ""
             echo "- Add \`japanese_temporal_periods.py\` so recall parses closed Japanese compounds (\`先週\` / \`来月\` / \`一昨日\` / kana aliases) before Chinese rules and the English-only dateparser scorer."
             echo "- Matching contract aligned with Chinese: recurring → open/since → closed longest-first; \`中\`/\`内\` as stem suffixes; short \`曜\` covered."
+            echo "- Japanese token independence uses UniDic character bounds (fugashi + unidic-lite extra \`ja-morph\`), not a one-character follower whitelist."
             echo "- Minimal Chinese patches for shared forms (\`昨日の会議\`, \`(?<!一)昨日\`)."
+            echo "- Image bundles UniDic-lite (BSD-2-Clause) via the \`ja-morph\` extra. The dictionary is **not** vendored into \`hindsight_api/\`; keep the installed package \`LICENSE\`. See the unidic-lite distribution license."
             echo ""
             echo "This is a fork overlay release (\`x0y14/hindsight\`), not an upstream PyPI/npm cut."
             echo ""
             echo "### Container image"
             echo ""
             echo "- Image: \`ghcr.io/x0y14/hindsight-api:${VERSION}-slim@${DIGEST}\`"
-            echo "- Platforms: \`linux/amd64\`, \`linux/arm64\` (JA probe runs on amd64 only)"
+            echo "- Platforms: \`linux/amd64\`, \`linux/arm64\` (JA probe and morph Tagger() probe run on amd64 only)"
             echo "- Revision: \`${CHECKOUT_REF}\`"
             if [ "${UPDATE_LATEST}" = "true" ]; then
               echo "- Also tagged: \`ghcr.io/x0y14/hindsight-api:latest-slim\` (same index digest)"

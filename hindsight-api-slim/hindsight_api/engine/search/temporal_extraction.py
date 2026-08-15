@@ -21,10 +21,11 @@ logger = logging.getLogger(__name__)
 # doing the work. Measured with 16 concurrent extractions over document-sized
 # text: the loop got a single scheduler tick in 1.3 seconds.
 #
-# It is offloaded to a thread instead. The pool is deliberately **one worker**:
-# the work is pure-Python and holds the GIL, so widening it does not add
-# parallelism, it just makes threads fight over the GIL. Measured, same 16
-# extractions:
+# It is offloaded to a thread instead. The pool is deliberately **one worker**.
+# Japanese extraction may call MeCab via fugashi; MeCab releases the GIL, so
+# extra workers would race on the shared Tagger (parse is already under a lock)
+# and would not add parallelism. Keep max_workers=1; do not widen it.
+# Measured, same 16 extractions:
 #
 #     inline              total= 1318ms   loop stall max=1318ms
 #     max_workers=1       total= 1438ms   loop stall max=   2.8ms

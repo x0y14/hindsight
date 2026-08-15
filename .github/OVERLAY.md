@@ -7,10 +7,11 @@ This fork tracks upstream release tags as `vX.Y.Z-ja` (Japanese temporal overlay
 - Use tag pattern **`vX.Y.Z-ja` only**. Do **not** push bare `vX.Y.Z` tags.
 - Do **not** run `scripts/release.sh` or the upstream `hs-release` skill on this fork (those cut PyPI/npm/`vX.Y.Z`).
 - Image publish is [`.github/workflows/release-ja.yml`](workflows/release-ja.yml) only:
-  - `ghcr.io/x0y14/hindsight-api:<X.Y.Z-ja>-slim`
-  - `ghcr.io/x0y14/hindsight-api:latest-slim` (always on tag push; on `workflow_dispatch`, only when `update_latest` is true, default false)
-- Tag-push runs also keyless-sign the image digest. Rebuilds via `workflow_dispatch` publish but do **not** sign (consumers should trust tag-push signatures only).
-- Privileged publish/sign jobs pin third-party actions by full commit SHA. `guard` / `test` may keep `actions/*@vN` because they only have `contents: read`.
+  - `ghcr.io/x0y14/hindsight-api:<X.Y.Z-ja>-slim` (OCI index: `linux/amd64` + `linux/arm64`; JA probe is amd64 only)
+  - `ghcr.io/x0y14/hindsight-api:latest-slim` (same index digest; always on tag push; on `workflow_dispatch`, only when `update_latest` is true, default false)
+- This is **`hindsight-api`** (`Dockerfile` target `api-only` slim). Official compose/bots pull `ghcr.io/vectorize-io/hindsight` (`standalone` = API+UI). Do **not** retag the api-only digest as `hindsight:…`; override compose `image:` to `hindsight-api:<X.Y.Z-ja>-slim` instead.
+- Tag-push runs also keyless-sign the **index** digest. Rebuilds via `workflow_dispatch` publish but do **not** sign (consumers should trust tag-push signatures only).
+- Privileged publish/sign jobs pin third-party actions by full commit SHA (QEMU also pins `tonistiigi/binfmt` by digest). `guard` / `test` may keep `actions/*@vN` because they only have `contents: read`.
 
 ## Upstream follow (file-based; do not key on a single CI commit SHA)
 

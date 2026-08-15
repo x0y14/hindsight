@@ -358,10 +358,11 @@ jobs:
             echo "Do **not** helm-install or compose from this fork tree as-is: chart/compose defaults still point at upstream images. Pull the overlay image above explicitly."
           } > "$NOTES_FILE"
 
+          # Tag deletion can leave a draft/untagged release; always publish.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --notes-file "$NOTES_FILE"
+            gh release edit "$TAG" --draft=false --notes-file "$NOTES_FILE"
           else
-            gh release create "$TAG" --title "$TAG" --notes-file "$NOTES_FILE"
+            gh release create "$TAG" --title "$TAG" --draft=false --notes-file "$NOTES_FILE"
           fi
 
   sign:

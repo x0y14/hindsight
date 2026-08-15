@@ -8,14 +8,24 @@ This fork tracks upstream release tags as `vX.Y.Z-ja` (Japanese temporal overlay
 - Do **not** run `scripts/release.sh` or the upstream `hs-release` skill on this fork (those cut PyPI/npm/`vX.Y.Z`).
 - Image publish is [`.github/workflows/release-ja.yml`](workflows/release-ja.yml) only:
   - `ghcr.io/x0y14/hindsight-api:<X.Y.Z-ja>-slim`
-  - `ghcr.io/x0y14/hindsight-api:latest-slim` (on tag push)
+  - `ghcr.io/x0y14/hindsight-api:latest-slim` (always on tag push; on `workflow_dispatch`, only when `update_latest` is true, default false)
+- Tag-push runs also keyless-sign the image digest. Rebuilds via `workflow_dispatch` publish but do **not** sign (consumers should trust tag-push signatures only).
+- Privileged publish/sign jobs pin third-party actions by full commit SHA. `guard` / `test` may keep `actions/*@vN` because they only have `contents: read`.
 
-## Upstream follow
+## Upstream follow (file-based; do not key on a single CI commit SHA)
 
-1. Branch from upstream `vX.Y.Z`
-2. Cherry-pick JA feature commits
-3. Cherry-pick **this CI overlay commit** (workflow deletes + `release-ja.yml`)
-4. Confirm `git show HEAD:.github/workflows/release.yml` fails
-5. Tag `vX.Y.Z-ja` and push `refs/tags/vX.Y.Z-ja`
+1. Branch from upstream `vX.Y.Z`.
+2. Ensure the JA payload is present:
+   - `hindsight-api-slim/hindsight_api/engine/japanese_temporal_periods.py`
+   - Chinese shared-form patches used by the JA router
+   - Tests exercised by the release workflow (`tests/test_query_analyzer.py`, `tests/test_temporal_extraction.py`)
+3. Ensure the CI overlay files are present (workflow deletes + `release-ja.yml` + this note). Do **not** restore upstream publish workflows.
+4. Workflows **allowlist** on the commit you will tag:
+   - `.github/workflows/` contains **only** `release-ja.yml` (no `.yaml`, no extras)
+   - `git show HEAD:.github/workflows/release.yml` must fail
+   - Deleted upstream names (must stay absent): `deploy-docs.yml`, `perf-test.yml`, `release-integration.yml`, `release-tool.yml`, `release.yml`, `sign-images.yml`, `star-history.yml`, `test.yml`, `windows-smoke.yml`
+5. Before tagging, check existing overlay tags: `git ls-remote origin 'refs/tags/v*-ja'`. Retagging an older `v*-ja` while a newer one exists will move `latest-slim` backward.
+6. Tag and push only: `git tag -a vX.Y.Z-ja <commit>` then `git push origin refs/tags/vX.Y.Z-ja`.
+7. Do **not** also `workflow_dispatch` in the same window as the tag push.
 
-Missing the CI overlay commit is a release blocker: a restored upstream `release.yml` would publish PyPI/npm/all images on the next `v*` tag.
+Missing the CI overlay (especially a restored upstream `release.yml`) is a release blocker: that workflow matches `v*` and would publish PyPI/npm/all images on the next `v*-ja` tag. An in-job allowlist cannot stop a sibling workflow.
